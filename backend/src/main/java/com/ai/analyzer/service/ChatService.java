@@ -224,9 +224,12 @@ public class ChatService {
     }
 
     private String extractClassName(String userMessage) {
+        log.info("Extracting class name from message: {}", userMessage);
+        
         String[] patterns = {
             "分析下这个类的源码(.+)",
             "分析(.+)类的源码",
+            "分析(.+)的源码",
             "分析(.+)类",
             "查看(.+)类",
             "查找(.+)类",
@@ -239,9 +242,10 @@ public class ChatService {
             java.util.regex.Matcher matcher = regex.matcher(userMessage);
             if (matcher.find()) {
                 String candidate = matcher.group(1).trim();
-                candidate = candidate.replaceAll("^[的是下看]", "").trim();
-                candidate = candidate.replaceAll("[的类源码]$", "").trim();
+                log.info("Pattern '{}' matched, candidate: {}", pattern, candidate);
+                candidate = cleanClassName(candidate);
                 if (!candidate.isEmpty() && candidate.length() > 1) {
+                    log.info("Extracted class name from pattern: {}", candidate);
                     return candidate;
                 }
             }
@@ -249,21 +253,42 @@ public class ChatService {
         
         String[] words = userMessage.split("[\\s，。、；：,.!！?？]+");
         for (String word : words) {
-            if (word.length() >= 3 && Character.isUpperCase(word.charAt(0))) {
+            log.info("Checking word: {}", word);
+            String cleaned = cleanClassName(word);
+            log.info("Cleaned word: {}", cleaned);
+            if (cleaned.length() >= 3 && Character.isUpperCase(cleaned.charAt(0))) {
                 boolean hasLower = false;
-                for (int i = 1; i < word.length(); i++) {
-                    if (Character.isLowerCase(word.charAt(i))) {
+                for (int i = 1; i < cleaned.length(); i++) {
+                    if (Character.isLowerCase(cleaned.charAt(i))) {
                         hasLower = true;
                         break;
                     }
                 }
                 if (hasLower) {
-                    return word;
+                    log.info("Extracted class name from word: {}", cleaned);
+                    return cleaned;
                 }
             }
         }
         
+        log.info("No class name extracted from message");
         return null;
+    }
+    
+    private String cleanClassName(String candidate) {
+        candidate = candidate.trim();
+        candidate = candidate.replaceAll("^[的是下看]", "").trim();
+        candidate = candidate.replaceAll("[的类源码]$", "").trim();
+        
+        if (candidate.toLowerCase().endsWith(".java")) {
+            candidate = candidate.substring(0, candidate.length() - 5);
+        } else if (candidate.toLowerCase().endsWith(".py")) {
+            candidate = candidate.substring(0, candidate.length() - 3);
+        } else if (candidate.toLowerCase().endsWith(".js") || candidate.toLowerCase().endsWith(".ts")) {
+            candidate = candidate.substring(0, candidate.length() - 3);
+        }
+        
+        return candidate.trim();
     }
     
     private List<String> findKeyFiles(List<String> allFiles) {

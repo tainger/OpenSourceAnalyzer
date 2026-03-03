@@ -148,6 +148,7 @@ public class CodeParserService {
     }
 
     public List<String> searchFilesByClassName(String localPath, String className) throws IOException {
+        log.info("Searching for files by class name: {}", className);
         List<String> matchedFiles = new ArrayList<>();
         Path repoPath = Paths.get(localPath);
         String lowerClassName = className.toLowerCase();
@@ -165,13 +166,17 @@ public class CodeParserService {
                         }
 
                         if (fileNameWithoutExt.equalsIgnoreCase(className) || 
-                            fileNameWithoutExt.toLowerCase().contains(lowerClassName)) {
-                            matchedFiles.add(repoPath.relativize(path).toString().replace(File.separator, "/"));
+                            fileNameWithoutExt.toLowerCase().contains(lowerClassName) ||
+                            fileName.toLowerCase().contains(lowerClassName)) {
+                            String relativePath = repoPath.relativize(path).toString().replace(File.separator, "/");
+                            matchedFiles.add(relativePath);
+                            log.info("Found matching file: {}", relativePath);
                         }
                     });
         }
 
         if (matchedFiles.isEmpty()) {
+            log.info("No exact matches found, trying fuzzy matching...");
             try (Stream<Path> paths = Files.walk(repoPath)) {
                 paths.filter(Files::isRegularFile)
                         .filter(this::isSupportedFile)
@@ -181,11 +186,13 @@ public class CodeParserService {
                             String relativePath = repoPath.relativize(path).toString().replace(File.separator, "/");
                             if (!matchedFiles.contains(relativePath)) {
                                 matchedFiles.add(relativePath);
+                                log.info("Found fuzzy matching file: {}", relativePath);
                             }
                         });
             }
         }
 
+        log.info("Search completed, found {} files", matchedFiles.size());
         return matchedFiles;
     }
 
