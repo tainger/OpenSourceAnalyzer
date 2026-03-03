@@ -211,17 +211,20 @@ public class RepositoryAnalysisService {
                         }
                     }
 
-                if (relatedCode.isEmpty()) {
-                    log.info("No direct matches found, searching vector store...");
-                    List<CodeChunk> chunks = vectorStoreService.search(errorStack, repoId, 10);
-                    for (CodeChunk chunk : chunks) {
-                        relatedCode.add(RelatedCode.builder()
-                                .filePath(chunk.getFilePath())
-                                .codeSnippet(chunk.getContent())
-                                .relevance("Medium")
-                                .build());
+                    if (relatedCode.isEmpty()) {
+                        log.info("No direct matches found, searching vector store...");
+                        List<CodeChunk> chunks = vectorStoreService.search(errorStack, repoId, 10);
+                        for (CodeChunk chunk : chunks) {
+                            relatedCode.add(RelatedCode.builder()
+                                    .filePath(chunk.getFilePath())
+                                    .codeSnippet(chunk.getContent())
+                                    .relevance("Medium")
+                                    .build());
+                        }
+                        log.info("Found {} related chunks from vector store", chunks.size());
                     }
-                    log.info("Found {} related chunks from vector store", chunks.size());
+                } catch (Exception e) {
+                    log.error("Failed to process error stack analysis", e);
                 }
             } else {
                 log.warn("Repository not found for id: {}", repoId);

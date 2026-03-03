@@ -254,6 +254,18 @@ public class ChatService {
                         prompt.append(String.format("   - 文件: `%s:%d`\n", location.getFilePath(), location.getLineNumber()));
                         prompt.append(String.format("   - 置信度: %.0f%%\n", location.getConfidence() * 100));
                         prompt.append("\n");
+                        
+                        if (location.getFilePath() != null && location.getFilePath().contains("/")) {
+                            try {
+                                String fileContent = codeParserService.readFile(repository.getLocalPath(), location.getFilePath());
+                                if (fileContent.length() > 15000) {
+                                    fileContent = fileContent.substring(0, 15000) + "\n... (文件内容已截断)";
+                                }
+                                prompt.append(String.format("   - 文件内容:\n```\n%s\n```\n\n", fileContent));
+                            } catch (Exception e) {
+                                log.warn("Failed to read full file for location: {}", location.getFilePath(), e);
+                            }
+                        }
                     }
                 }
                 
@@ -278,25 +290,40 @@ public class ChatService {
                 String className = extractClassName(userMessage);
                 if (className != null) {
                     prompt.append("🔍 检测到类名查询: ").append(className).append("\n\n");
-                    List<String> matchedFiles = codeParserService.searchFilesByClassName(
-                            repository.getLocalPath(),
-                            className
-                    );
+                    
+                    List<String> matchedFiles = new ArrayList<>();
+                    try {
+                        matchedFiles = codeParserService.searchFilesByClassName(
+                                repository.getLocalPath(),
+                                className
+                        );
+                        
+                        if (matchedFiles.isEmpty()) {
+                            log.info("No match by simple class name, trying full class path match");
+                            matchedFiles = findFilesByFullClassName(allFiles, className);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to search files by class name", e);
+                    }
+                    
                     if (!matchedFiles.isEmpty()) {
                         prompt.append("找到 ").append(matchedFiles.size()).append(" 个相关文件:\n");
-                        for (int i = 0; i < matchedFiles.size(); i++) {
+                        for (int i = 0; i < matchedFiles.size() && i < 3; i++) {
                             String matchedFile = matchedFiles.get(i);
                             prompt.append("  ").append(i + 1).append(". ").append(matchedFile).append("\n");
                             try {
                                 String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
                                 prompt.append("文件内容:\n");
-                                if (fileContent.length() > 8000) {
-                                    fileContent = fileContent.substring(0, 8000) + "\n... (文件内容已截断，如需查看完整内容请指定具体问题)";
+                                if (fileContent.length() > 15000) {
+                                    fileContent = fileContent.substring(0, 15000) + "\n... (文件内容已截断)";
                                 }
                                 prompt.append("```\n").append(fileContent).append("\n```\n\n");
                             } catch (IOException e) {
                                 log.warn("Failed to read matched file: {}", matchedFile, e);
                             }
+                        }
+                        if (matchedFiles.size() > 3) {
+                            prompt.append("... 还有 ").append(matchedFiles.size() - 3).append(" 个文件\n\n");
                         }
                     } else {
                         prompt.append("⚠️ 未找到名为 \"").append(className).append("\" 的类文件。\n\n");
@@ -646,5 +673,40 @@ public class ChatService {
         } else {
             return "通用";
         }
+    }
+    
+    private List<String> findFilesByFullClassName(List<String> allFiles, String className) {
+        List<String> matchedFiles = new ArrayList<>();
+        
+        String packagePath = className.replace('.', '/') + ".java";
+        log.info("Checking package path: {}", packagePath);
+        
+        for (String file : allFiles) {
+            if (file.endsWith(packagePath)) {
+                matchedFiles.add(file);
+            }
+        }
+        
+        if (matchedFiles.isEmpty()) {
+            String simpleFileName = className + ".java";
+            for (String file : allFiles) {
+                if (file.endsWith("/" + simpleFileName) || file.equals(simpleFileName)) {
+                    matchedFiles.add(file);
+                }
+            }
+        }
+        
+        if (matchedFiles.isEmpty()) {
+            String lowerClassName = className.toLowerCase();
+            for (String file : allFiles) {
+                String fileName = file.substring(file.lastIndexOf('/') + 1).toLowerCase();
+                if (fileName.contains(lowerClassName) && fileName.endsWith(".java")) {
+                    matchedFiles.add(file);
+                }
+            }
+        }
+        
+        log.info("Found {} files for class {} via full class name match", matchedFiles.size(), className);
+        return matchedFiles;
     }
 }
