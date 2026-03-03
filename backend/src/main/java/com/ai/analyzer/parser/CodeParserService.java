@@ -27,7 +27,14 @@ public class CodeParserService {
 
     private static final Set<String> IGNORE_DIRS = Set.of(
             ".git", "node_modules", "target", "build", "dist", "vendor",
-            "__pycache__", ".idea", ".vscode", ".next", ".nuxt", "out"
+            "__pycache__", ".idea", ".vscode", ".next", ".nuxt", "out",
+            "test", "tests", "Test", "Tests"
+    );
+    
+    private static final Set<String> TEST_FILE_PATTERNS = Set.of(
+            "Test.java", "Tests.java", "Test.kt", "Tests.kt",
+            "test.py", "tests.py",
+            "test.js", "test.ts", "spec.js", "spec.ts"
     );
 
     public List<CodeChunk> parseRepository(String repoId, String localPath) {
@@ -42,6 +49,8 @@ public class CodeParserService {
         try (Stream<Path> paths = Files.walk(repoPath)) {
             paths.filter(Files::isRegularFile)
                     .filter(this::isSupportedFile)
+                    .filter(path -> !shouldIgnoreDir(path, repoPath))
+                    .filter(path -> !isTestFile(path))
                     .forEach(path -> {
                         try {
                             chunks.addAll(parseFile(repoId, path, repoPath));
@@ -55,6 +64,27 @@ public class CodeParserService {
 
         log.info("Parsed {} code chunks from repository: {}", chunks.size(), repoId);
         return chunks;
+    }
+    
+    private boolean isTestFile(Path path) {
+        String fileName = path.getFileName().toString().toLowerCase();
+        String lowerPath = path.toString().toLowerCase();
+        
+        if (lowerPath.contains("/test/") || lowerPath.contains("/tests/")) {
+            return true;
+        }
+        
+        for (String pattern : TEST_FILE_PATTERNS) {
+            if (fileName.endsWith(pattern.toLowerCase())) {
+                return true;
+            }
+        }
+        
+        if (fileName.startsWith("test") || fileName.endsWith("test")) {
+            return true;
+        }
+        
+        return false;
     }
 
     private boolean isSupportedFile(Path path) {
@@ -141,6 +171,7 @@ public class CodeParserService {
             paths.filter(Files::isRegularFile)
                     .filter(this::isSupportedFile)
                     .filter(path -> !shouldIgnoreDir(path, repoPath))
+                    .filter(path -> !isTestFile(path))
                     .forEach(path -> files.add(repoPath.relativize(path).toString().replace(File.separator, "/")));
         }
 
