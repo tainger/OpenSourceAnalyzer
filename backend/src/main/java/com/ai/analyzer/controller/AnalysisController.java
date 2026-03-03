@@ -4,6 +4,7 @@ import com.ai.analyzer.git.GitService;
 import com.ai.analyzer.model.Repository;
 import com.ai.analyzer.model.dto.*;
 import com.ai.analyzer.parser.CodeParserService;
+import com.ai.analyzer.service.ChatMemoryService;
 import com.ai.analyzer.service.ChatService;
 import com.ai.analyzer.service.RepositoryAnalysisService;
 import jakarta.validation.Valid;
@@ -25,6 +26,7 @@ public class AnalysisController {
     private final CodeParserService codeParserService;
     private final GitService gitService;
     private final ChatService chatService;
+    private final ChatMemoryService chatMemoryService;
 
     @GetMapping("/architecture/{repoId}")
     public ResponseEntity<ArchitectureAnalysisResponse> analyzeArchitecture(@PathVariable String repoId) {
@@ -65,5 +67,17 @@ public class AnalysisController {
                 .message(response)
                 .timestamp(LocalDateTime.now())
                 .build());
+    }
+
+    @DeleteMapping("/chat/{repoId}/history")
+    public ResponseEntity<Void> clearChatHistory(@PathVariable String repoId) {
+        chatMemoryService.clearConversation(repoId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/chat/history")
+    public ResponseEntity<Void> clearAllChatHistory() {
+        chatMemoryService.clearAllConversations();
+        return ResponseEntity.noContent().build();
     }
 }

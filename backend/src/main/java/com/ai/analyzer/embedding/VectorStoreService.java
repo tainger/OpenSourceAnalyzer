@@ -37,6 +37,10 @@ public class VectorStoreService {
     }
 
     public List<CodeChunk> search(String query, String repositoryId, int limit) {
+        return search(query, repositoryId, limit, false);
+    }
+
+    public List<CodeChunk> search(String query, String repositoryId, int limit, boolean useReranking) {
         List<CodeChunk> results = new ArrayList<>();
         
         if (repositoryId == null || !chunkStore.containsKey(repositoryId)) {
@@ -55,16 +59,21 @@ public class VectorStoreService {
             float[] chunkEmbedding = chunk.getEmbedding();
             if (chunkEmbedding != null) {
                 double similarity = cosineSimilarity(queryEmbedding, chunkEmbedding);
-                double keywordScore = calculateKeywordScore(query, chunk);
-                double combinedScore = 0.7 * similarity + 0.3 * keywordScore;
+                double keywordScore = calculateEnhancedKeywordScore(query, chunk);
+                double recencyScore = calculateRecencyScore(chunk);
+                double combinedScore = 0.6 * similarity + 0.25 * keywordScore + 0.15 * recencyScore;
                 scoredChunks.add(new ScoredChunk(chunk, combinedScore));
             } else {
-                double keywordScore = calculateKeywordScore(query, chunk);
+                double keywordScore = calculateEnhancedKeywordScore(query, chunk);
                 scoredChunks.add(new ScoredChunk(chunk, keywordScore * 0.5));
             }
         }
 
         scoredChunks.sort((a, b) -> Double.compare(b.score, a.score));
+
+        if (useReranking && scoredChunks.size() > limit) {
+            scoredChunks = rerankChunks(query, scoredChunks, limit * 2);
+        }
 
         for (int i = 0; i < Math.min(limit, scoredChunks.size()); i++) {
             results.add(scoredChunks.get(i).chunk);
@@ -72,6 +81,51 @@ public class VectorStoreService {
 
         log.info("Vector search completed, found {} results (limit: {})", results.size(), limit);
         return results;
+    }
+
+    private double calculateEnhancedKeywordScore(String query, CodeChunk chunk) {
+        String lowerQuery = query.toLowerCase();
+        String lowerContent = chunk.getContent() != null ? chunk.getContent().toLowerCase() : "";
+        String lowerFilePath = chunk.getFilePath() != null ? chunk.getFilePath().toLowerCase() : "";
+        String lowerFileName = chunk.getFileName() != null ? chunk.getFileName().toLowerCase() : "";
+
+        double score = 0.0;
+        String[] keywords = lowerQuery.split("\\s+");
+
+        for (String keyword : keywords) {
+            if (keyword.isEmpty()) continue;
+            
+            if (lowerFileName.equals(keyword + ".java") || lowerFileName.equals(keyword + ".py") || 
+                lowerFileName.equals(keyword + ".js") || lowerFileName.equals(keyword + ".ts")) {
+                score += 1.0;
+            } else if (lowerFilePath.contains("/" + keyword + "/")) {
+                score += 0.6;
+            } else if (lowerFilePath.contains(keyword)) {
+                score += 0.4;
+            }
+            
+            int contentMatches = (lowerContent.length() - lowerContent.replace(keyword, "").length()) / keyword.length();
+            if (contentMatches > 0) {
+                score += Math.min(0.5, contentMatches * 0.1);
+            }
+            
+            if (lowerContent.contains("class " + keyword) || 
+                lowerContent.contains("function " + keyword) ||
+                lowerContent.contains("def " + keyword)) {
+                score += 0.3;
+            }
+        }
+
+        return Math.min(score, 1.0);
+    }
+
+    private double calculateRecencyScore(CodeChunk chunk) {
+        return 0.5;
+    }
+
+    private List<ScoredChunk> rerankChunks(String query, List<ScoredChunk> chunks, int topK) {
+        List<ScoredChunk> candidates = chunks.stream().limit(topK).toList();
+        return candidates;
     }
 
     private double cosineSimilarity(float[] a, float[] b) {

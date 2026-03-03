@@ -33,15 +33,19 @@ public class ChatService {
     private final VectorStoreService vectorStoreService;
     private final CodeParserService codeParserService;
     private final RepositoryAnalysisService analysisService;
+    private final ChatMemoryService chatMemoryService;
+    private final ToolService toolService;
     private final AnalyzerProperties properties;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    public ChatService(GitService gitService, VectorStoreService vectorStoreService, CodeParserService codeParserService, RepositoryAnalysisService analysisService, AnalyzerProperties properties) {
+    public ChatService(GitService gitService, VectorStoreService vectorStoreService, CodeParserService codeParserService, RepositoryAnalysisService analysisService, ChatMemoryService chatMemoryService, ToolService toolService, AnalyzerProperties properties) {
         this.gitService = gitService;
         this.vectorStoreService = vectorStoreService;
         this.codeParserService = codeParserService;
         this.analysisService = analysisService;
+        this.chatMemoryService = chatMemoryService;
+        this.toolService = toolService;
         this.properties = properties;
         this.restTemplate = createRestTemplateWithTimeout();
         this.objectMapper = new ObjectMapper();
@@ -60,28 +64,40 @@ public class ChatService {
             return "未找到仓库，请先选择一个仓库。";
         }
 
+        chatMemoryService.addMessage(repositoryId, "user", message);
+
         String apiKey = properties.getDashscope().getApiKey();
         if (apiKey == null || apiKey.trim().isEmpty()) {
             log.info("No API Key configured, using fallback response");
             
+            String response;
             if (isErrorStack(message)) {
-                return analyzeErrorStack(repositoryId, message);
+                response = analyzeErrorStack(repositoryId, message);
+            } else {
+                response = useFallbackResponse(repository, message);
             }
             
-            return useFallbackResponse(repository, message);
+            chatMemoryService.addMessage(repositoryId, "assistant", response);
+            return response;
         }
 
         log.info("API Key found, calling DashScope API...");
         try {
-            return callDashscopeAPI(repository, message);
+            String response = callDashscopeAPI(repository, message);
+            chatMemoryService.addMessage(repositoryId, "assistant", response);
+            return response;
         } catch (Exception e) {
             log.error("Failed to call DashScope API: " + e.getMessage(), e);
             
+            String response;
             if (isErrorStack(message)) {
-                return "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到基础分析模式。\n\n" + analyzeErrorStack(repositoryId, message);
+                response = "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到基础分析模式。\n\n" + analyzeErrorStack(repositoryId, message);
+            } else {
+                response = "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到预设回答模式。\n\n" + useFallbackResponse(repository, message);
             }
             
-            return "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到预设回答模式。\n\n" + useFallbackResponse(repository, message);
+            chatMemoryService.addMessage(repositoryId, "assistant", response);
+            return response;
         }
     }
     
@@ -223,10 +239,27 @@ public class ChatService {
 
     private String buildPrompt(Repository repository, String userMessage) {
         StringBuilder prompt = new StringBuilder();
+        prompt.append("你是一个专业的代码分析助手，擅长理解和分析代码库。\n\n");
+        
+        String conversationHistory = chatMemoryService.buildConversationContext(repository.getId());
+        if (!conversationHistory.isEmpty()) {
+            prompt.append(conversationHistory).append("\n\n");
+        }
+        
+        prompt.append("## 可用工具\n\n");
+        prompt.append("如果需要，你可以要求使用以下工具。请用 JSON 格式描述工具调用：\n");
+        prompt.append(toolService.getAvailableTools()).append("\n\n");
+        
         prompt.append("项目信息：\n");
         prompt.append("- 项目名称: ").append(repository.getName()).append("\n");
         prompt.append("- 项目地址: ").append(repository.getUrl()).append("\n");
         prompt.append("- 本地路径: ").append(repository.getLocalPath()).append("\n\n");
+        
+        prompt.append("## 回答要求\n\n");
+        prompt.append("1. 用中文回答\n");
+        prompt.append("2. 回答要专业、详细\n");
+        prompt.append("3. 如果需要查看更多代码或文件，可以要求使用工具\n");
+        prompt.append("4. 结合项目上下文进行分析\n\n");
         
         boolean isErrorStack = isErrorStack(userMessage);
         

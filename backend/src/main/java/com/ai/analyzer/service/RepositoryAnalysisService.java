@@ -396,6 +396,7 @@ public class RepositoryAnalysisService {
 
     private List<SuspectedLocation> parseErrorStack(String errorStack) {
         List<SuspectedLocation> locations = new ArrayList<>();
+        Set<String> seenLocations = new HashSet<>();
         
         List<Pattern> patterns = new ArrayList<>();
         patterns.add(Pattern.compile(
@@ -425,18 +426,71 @@ public class RepositoryAnalysisService {
                     fileName = extractSimpleClassName(className) + ".java";
                 }
                 
-                locations.add(SuspectedLocation.builder()
-                        .className(className)
-                        .methodName(methodName)
-                        .filePath(fileName)
-                        .lineNumber(lineNumber)
-                        .description("Found in stack trace")
-                        .confidence(0.7)
-                        .build());
+                String locationKey = className + "#" + methodName + "#" + fileName + "#" + lineNumber;
+                if (!seenLocations.contains(locationKey)) {
+                    seenLocations.add(locationKey);
+                    
+                    double confidence = calculateInitialConfidence(className, lineNumber);
+                    
+                    locations.add(SuspectedLocation.builder()
+                            .className(className)
+                            .methodName(methodName)
+                            .filePath(fileName)
+                            .lineNumber(lineNumber)
+                            .description("Found in stack trace")
+                            .confidence(confidence)
+                            .build());
+                }
             }
         }
         
-        return locations.stream().distinct().toList();
+        locations.sort((a, b) -> {
+            boolean aIsInternal = isInternalClass(a.getClassName());
+            boolean bIsInternal = isInternalClass(b.getClassName());
+            
+            if (aIsInternal != bIsInternal) {
+                return aIsInternal ? -1 : 1;
+            }
+            
+            return Double.compare(b.getConfidence(), a.getConfidence());
+        });
+        
+        return locations;
+    }
+    
+    private double calculateInitialConfidence(String className, int lineNumber) {
+        double confidence = 0.7;
+        
+        if (isInternalClass(className)) {
+            confidence += 0.15;
+        }
+        
+        if (lineNumber > 0) {
+            confidence += 0.1;
+        }
+        
+        return Math.min(confidence, 1.0);
+    }
+    
+    private boolean isInternalClass(String className) {
+        if (className == null) {
+            return false;
+        }
+        
+        String lowerClassName = className.toLowerCase();
+        
+        List<String> javaInternalPackages = Arrays.asList(
+            "java.", "javax.", "sun.", "com.sun.", "jdk.", 
+            "org.apache.", "org.springframework.", "org.hibernate."
+        );
+        
+        for (String prefix : javaInternalPackages) {
+            if (lowerClassName.startsWith(prefix)) {
+                return false;
+            }
+        }
+        
+        return true;
     }
     
     private String extractSimpleClassName(String fullClassName) {
