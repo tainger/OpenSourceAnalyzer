@@ -187,7 +187,17 @@ Caused by: java.lang.IllegalStateException: Server not initialized
                       </span>
                     </div>
                     <p className="text-sm text-gray-600 mb-1">
-                      {location.filePath}:{location.lineNumber}
+                      {selectedRepoId && location.filePath && location.filePath.includes('/') ? (
+                        <Link
+                          to={`/walkthrough/${selectedRepoId}`}
+                          state={{ filePath: location.filePath }}
+                          className="text-blue-600 hover:underline font-mono"
+                        >
+                          {location.filePath}:{location.lineNumber}
+                        </Link>
+                      ) : (
+                        <span className="font-mono">{location.filePath}:{location.lineNumber}</span>
+                      )}
                     </p>
                     <p className="text-gray-700">{location.description}</p>
                   </div>
@@ -217,9 +227,19 @@ Caused by: java.lang.IllegalStateException: Server not initialized
                 {analysis.relatedCode.map((code, index) => (
                   <div key={index}>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="font-medium text-gray-800 font-mono text-sm">
-                        {code.filePath}
-                      </span>
+                      {selectedRepoId && code.filePath && code.filePath.includes('/') ? (
+                        <Link
+                          to={`/walkthrough/${selectedRepoId}`}
+                          state={{ filePath: code.filePath }}
+                          className="font-medium text-blue-600 hover:underline font-mono text-sm"
+                        >
+                          {code.filePath}
+                        </Link>
+                      ) : (
+                        <span className="font-medium text-gray-800 font-mono text-sm">
+                          {code.filePath}
+                        </span>
+                      )}
                       <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
                         {code.relevance}
                       </span>

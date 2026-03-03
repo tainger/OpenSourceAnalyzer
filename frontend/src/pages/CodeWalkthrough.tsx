@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { analysisApi, CodeWalkthroughResponse } from '../services/api';
 
 interface TreeNode {
@@ -104,6 +104,7 @@ const TreeItem: React.FC<{
 
 const CodeWalkthrough: React.FC = () => {
   const { repoId } = useParams<{ repoId: string }>();
+  const location = useLocation();
   const [files, setFiles] = useState<string[]>([]);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [filteredTree, setFilteredTree] = useState<TreeNode[]>([]);
@@ -118,6 +119,15 @@ const CodeWalkthrough: React.FC = () => {
       loadFiles();
     }
   }, [repoId]);
+
+  useEffect(() => {
+    if (files.length > 0 && location.state && (location.state as any).filePath) {
+      const filePath = (location.state as any).filePath;
+      if (files.includes(filePath)) {
+        loadWalkthrough(filePath);
+      }
+    }
+  }, [files, location.state]);
 
   useEffect(() => {
     if (searchQuery.trim() === '') {

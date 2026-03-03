@@ -153,7 +153,10 @@ public class RepositoryAnalysisService {
                         );
                         log.info("Found {} matched files for {}", matchedFiles.size(), simpleClassName);
                         
-                        for (String matchedFile : matchedFiles) {
+                        if (!matchedFiles.isEmpty()) {
+                            String matchedFile = matchedFiles.get(0);
+                            location.setFilePath(matchedFile);
+                            
                             try {
                                 String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
                                 String relevantSnippet = extractRelevantSnippet(fileContent, location.getMethodName(), location.getLineNumber());
@@ -167,9 +170,7 @@ public class RepositoryAnalysisService {
                             } catch (Exception e) {
                                 log.warn("Failed to read file: {}", matchedFile, e);
                             }
-                        }
-                        
-                        if (matchedFiles.isEmpty()) {
+                        } else {
                             List<CodeChunk> relatedChunks = vectorStoreService.search(
                                     location.getClassName() + " " + location.getMethodName(),
                                     repoId,
