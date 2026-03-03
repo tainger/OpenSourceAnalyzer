@@ -60,14 +60,14 @@ public class ChatService {
             return "未找到仓库，请先选择一个仓库。";
         }
 
-        if (isErrorStack(message)) {
-            log.info("Detected error stack, analyzing...");
-            return analyzeErrorStack(repositoryId, message);
-        }
-
         String apiKey = properties.getDashscope().getApiKey();
         if (apiKey == null || apiKey.trim().isEmpty()) {
             log.info("No API Key configured, using fallback response");
+            
+            if (isErrorStack(message)) {
+                return analyzeErrorStack(repositoryId, message);
+            }
+            
             return useFallbackResponse(repository, message);
         }
 
@@ -76,6 +76,11 @@ public class ChatService {
             return callDashscopeAPI(repository, message);
         } catch (Exception e) {
             log.error("Failed to call DashScope API: " + e.getMessage(), e);
+            
+            if (isErrorStack(message)) {
+                return "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到基础分析模式。\n\n" + analyzeErrorStack(repositoryId, message);
+            }
+            
             return "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到预设回答模式。\n\n" + useFallbackResponse(repository, message);
         }
     }
@@ -223,70 +228,118 @@ public class ChatService {
         prompt.append("- 项目地址: ").append(repository.getUrl()).append("\n");
         prompt.append("- 本地路径: ").append(repository.getLocalPath()).append("\n\n");
         
+        boolean isErrorStack = isErrorStack(userMessage);
+        
         try {
             List<String> allFiles = codeParserService.listFiles(repository.getLocalPath());
             
-            String className = extractClassName(userMessage);
-            if (className != null) {
-                prompt.append("🔍 检测到类名查询: ").append(className).append("\n\n");
-                List<String> matchedFiles = codeParserService.searchFilesByClassName(repository.getLocalPath(), className);
-                if (!matchedFiles.isEmpty()) {
-                    prompt.append("找到 ").append(matchedFiles.size()).append(" 个相关文件:\n");
-                    for (int i = 0; i < matchedFiles.size(); i++) {
-                        String matchedFile = matchedFiles.get(i);
-                        prompt.append("  ").append(i + 1).append(". ").append(matchedFile).append("\n");
-                        try {
-                            String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
-                            prompt.append("文件内容:\n");
-                            if (fileContent.length() > 8000) {
-                                fileContent = fileContent.substring(0, 8000) + "\n... (文件内容已截断，如需查看完整内容请指定具体问题)";
+            if (isErrorStack) {
+                prompt.append("🔍 检测到错误堆栈，正在进行深度分析...\n\n");
+                
+                ErrorStackAnalysisResponse analysis = analysisService.analyzeErrorStack(repository.getId(), userMessage);
+                
+                prompt.append("## 错误分析结果\n\n");
+                prompt.append("### 错误类型\n");
+                prompt.append(analysis.getErrorType()).append("\n\n");
+                prompt.append("### 根本原因\n");
+                prompt.append(analysis.getRootCause()).append("\n\n");
+                prompt.append("### 摘要\n");
+                prompt.append(analysis.getSummary()).append("\n\n");
+                
+                if (!analysis.getSuspectedLocations().isEmpty()) {
+                    prompt.append("### 可疑位置\n");
+                    for (int i = 0; i < analysis.getSuspectedLocations().size(); i++) {
+                        SuspectedLocation location = analysis.getSuspectedLocations().get(i);
+                        prompt.append(String.format("%d. **%s.%s**\n", i + 1, location.getClassName(), location.getMethodName()));
+                        prompt.append(String.format("   - 文件: `%s:%d`\n", location.getFilePath(), location.getLineNumber()));
+                        prompt.append(String.format("   - 置信度: %.0f%%\n", location.getConfidence() * 100));
+                        prompt.append("\n");
+                    }
+                }
+                
+                if (!analysis.getRelatedCode().isEmpty()) {
+                    prompt.append("### 相关代码\n");
+                    for (int i = 0; i < analysis.getRelatedCode().size() && i < 5; i++) {
+                        com.ai.analyzer.model.dto.RelatedCode code = analysis.getRelatedCode().get(i);
+                        prompt.append(String.format("#### %d. %s\n", i + 1, code.getFilePath()));
+                        prompt.append("```\n").append(code.getCodeSnippet()).append("\n```\n\n");
+                    }
+                }
+                
+                prompt.append("## 你的任务\n\n");
+                prompt.append("请基于以上错误分析结果，进行深度分析并提供：\n");
+                prompt.append("1. 详细解释错误发生的原因\n");
+                prompt.append("2. 分析相关代码，指出问题所在\n");
+                prompt.append("3. 提供具体的修复建议和代码示例\n");
+                prompt.append("4. 说明如何预防类似问题\n");
+                prompt.append("\n请用中文回答，保持专业和详细。\n\n");
+                
+            } else {
+                String className = extractClassName(userMessage);
+                if (className != null) {
+                    prompt.append("🔍 检测到类名查询: ").append(className).append("\n\n");
+                    List<String> matchedFiles = codeParserService.searchFilesByClassName(
+                            repository.getLocalPath(),
+                            className
+                    );
+                    if (!matchedFiles.isEmpty()) {
+                        prompt.append("找到 ").append(matchedFiles.size()).append(" 个相关文件:\n");
+                        for (int i = 0; i < matchedFiles.size(); i++) {
+                            String matchedFile = matchedFiles.get(i);
+                            prompt.append("  ").append(i + 1).append(". ").append(matchedFile).append("\n");
+                            try {
+                                String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
+                                prompt.append("文件内容:\n");
+                                if (fileContent.length() > 8000) {
+                                    fileContent = fileContent.substring(0, 8000) + "\n... (文件内容已截断，如需查看完整内容请指定具体问题)";
+                                }
+                                prompt.append("```\n").append(fileContent).append("\n```\n\n");
+                            } catch (IOException e) {
+                                log.warn("Failed to read matched file: {}", matchedFile, e);
                             }
-                            prompt.append("```\n").append(fileContent).append("\n```\n\n");
-                        } catch (IOException e) {
-                            log.warn("Failed to read matched file: {}", matchedFile, e);
+                        }
+                    } else {
+                        prompt.append("⚠️ 未找到名为 \"").append(className).append("\" 的类文件。\n\n");
+                        prompt.append("项目文件列表 (共 ").append(allFiles.size()).append(" 个文件):\n");
+                        List<String> keyFiles = findKeyFiles(allFiles);
+                        for (String file : keyFiles) {
+                            prompt.append("  - ").append(file).append("\n");
+                        }
+                        if (allFiles.size() > keyFiles.size()) {
+                            prompt.append("  ... 还有 ").append(allFiles.size() - keyFiles.size()).append(" 个文件\n");
                         }
                     }
                 } else {
-                    prompt.append("⚠️ 未找到名为 \"").append(className).append("\" 的类文件。\n\n");
                     prompt.append("项目文件列表 (共 ").append(allFiles.size()).append(" 个文件):\n");
+                    
                     List<String> keyFiles = findKeyFiles(allFiles);
                     for (String file : keyFiles) {
                         prompt.append("  - ").append(file).append("\n");
                     }
+                    
                     if (allFiles.size() > keyFiles.size()) {
                         prompt.append("  ... 还有 ").append(allFiles.size() - keyFiles.size()).append(" 个文件\n");
                     }
-                }
-            } else {
-                prompt.append("项目文件列表 (共 ").append(allFiles.size()).append(" 个文件):\n");
-                
-                List<String> keyFiles = findKeyFiles(allFiles);
-                for (String file : keyFiles) {
-                    prompt.append("  - ").append(file).append("\n");
-                }
-                
-                if (allFiles.size() > keyFiles.size()) {
-                    prompt.append("  ... 还有 ").append(allFiles.size() - keyFiles.size()).append(" 个文件\n");
-                }
-                prompt.append("\n");
-                
-                String readmeContent = readReadmeFile(repository.getLocalPath());
-                if (readmeContent != null) {
-                    prompt.append("README 内容:\n");
-                    prompt.append(readmeContent).append("\n\n");
-                }
-                
-                List<String> sampleFiles = selectSampleFiles(allFiles, userMessage);
-                for (String sampleFile : sampleFiles) {
-                    try {
-                        String fileContent = codeParserService.readFile(repository.getLocalPath(), sampleFile);
-                        prompt.append("文件: ").append(sampleFile).append("\n");
-                        if (fileContent.length() > 1000) {
-                            fileContent = fileContent.substring(0, 1000) + "\n... (文件内容已截断)";
+                    prompt.append("\n");
+                    
+                    String readmeContent = readReadmeFile(repository.getLocalPath());
+                    if (readmeContent != null) {
+                        prompt.append("README 内容:\n");
+                        prompt.append(readmeContent).append("\n\n");
+                    }
+                    
+                    List<String> sampleFiles = selectSampleFiles(allFiles, userMessage);
+                    for (String sampleFile : sampleFiles) {
+                        try {
+                            String fileContent = codeParserService.readFile(repository.getLocalPath(), sampleFile);
+                            prompt.append("文件: ").append(sampleFile).append("\n");
+                            if (fileContent.length() > 1000) {
+                                fileContent = fileContent.substring(0, 1000) + "\n... (文件内容已截断)";
+                            }
+                            prompt.append("```\n").append(fileContent).append("\n```\n\n");
+                        } catch (IOException e) {
+                            log.warn("Failed to read sample file: {}", sampleFile, e);
                         }
-                        prompt.append("```\n").append(fileContent).append("\n```\n\n");
-                    } catch (IOException e) {
-                        log.warn("Failed to read sample file: {}", sampleFile, e);
                     }
                 }
             }
@@ -295,28 +348,31 @@ public class ChatService {
             prompt.append("无法读取项目文件信息。\n\n");
         }
         
-        prompt.append("用户问题: ").append(userMessage).append("\n\n");
-        
-        List<CodeChunk> relatedChunks = vectorStoreService.search(userMessage, repository.getId(), 3);
-        if (!relatedChunks.isEmpty()) {
-            prompt.append("相关代码片段:\n");
-            for (int i = 0; i < relatedChunks.size(); i++) {
-                CodeChunk chunk = relatedChunks.get(i);
-                prompt.append("\n--- 片段 ").append(i + 1).append(":\n");
-                if (chunk.getFilePath() != null) {
-                    prompt.append("文件: ").append(chunk.getFilePath()).append("\n");
-                }
-                if (chunk.getContent() != null) {
-                    String content = chunk.getContent();
-                    if (content.length() > 500) {
-                        content = content.substring(0, 500) + "...";
+        if (!isErrorStack) {
+            prompt.append("用户问题: ").append(userMessage).append("\n\n");
+            
+            List<CodeChunk> relatedChunks = vectorStoreService.search(userMessage, repository.getId(), 3);
+            if (!relatedChunks.isEmpty()) {
+                prompt.append("相关代码片段:\n");
+                for (int i = 0; i < relatedChunks.size(); i++) {
+                    CodeChunk chunk = relatedChunks.get(i);
+                    prompt.append("\n--- 片段 ").append(i + 1).append(":\n");
+                    if (chunk.getFilePath() != null) {
+                        prompt.append("文件: ").append(chunk.getFilePath()).append("\n");
                     }
-                    prompt.append("内容:\n").append(content).append("\n");
+                    if (chunk.getContent() != null) {
+                        String content = chunk.getContent();
+                        if (content.length() > 500) {
+                            content = content.substring(0, 500) + "...";
+                        }
+                        prompt.append("内容:\n").append(content).append("\n");
+                    }
                 }
             }
+            
+            prompt.append("\n请根据以上信息回答用户的问题。");
         }
         
-        prompt.append("\n请根据以上信息回答用户的问题。");
         return prompt.toString();
     }
 

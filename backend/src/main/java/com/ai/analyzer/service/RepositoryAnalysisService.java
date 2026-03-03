@@ -142,48 +142,74 @@ public class RepositoryAnalysisService {
             Repository repository = gitService.getRepository(repoId);
             if (repository != null) {
                 log.info("Repository found: {}", repository.getName());
-                for (SuspectedLocation location : locations) {
-                    try {
-                        String simpleClassName = extractSimpleClassName(location.getClassName());
-                        log.info("Searching for class: {}", simpleClassName);
-                        
-                        List<String> matchedFiles = codeParserService.searchFilesByClassName(
-                                repository.getLocalPath(),
-                                simpleClassName
-                        );
-                        log.info("Found {} matched files for {}", matchedFiles.size(), simpleClassName);
-                        
-                        if (!matchedFiles.isEmpty()) {
-                            String matchedFile = matchedFiles.get(0);
-                            location.setFilePath(matchedFile);
+                
+                try {
+                    List<String> allFiles = codeParserService.listFiles(repository.getLocalPath());
+                    log.info("Total files in repository: {}", allFiles.size());
+                    
+                    for (SuspectedLocation location : locations) {
+                        try {
+                            String fullClassName = location.getClassName();
+                            String simpleClassName = extractSimpleClassName(fullClassName);
+                            log.info("Searching for class: {} (full: {})", simpleClassName, fullClassName);
                             
-                            try {
-                                String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
-                                String relevantSnippet = extractRelevantSnippet(fileContent, location.getMethodName(), location.getLineNumber());
-                                relatedCode.add(RelatedCode.builder()
-                                        .filePath(matchedFile)
-                                        .codeSnippet(relevantSnippet)
-                                        .relevance("High")
-                                        .build());
-                                location.setConfidence(0.9);
-                                log.info("Added related code for: {}", matchedFile);
-                            } catch (Exception e) {
-                                log.warn("Failed to read file: {}", matchedFile, e);
+                            String matchedFile = findFileByFullClassName(allFiles, fullClassName, simpleClassName);
+                            
+                            if (matchedFile != null) {
+                                location.setFilePath(matchedFile);
+                                log.info("Found exact match for {}: {}", fullClassName, matchedFile);
+                                
+                                try {
+                                    String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile);
+                                    String relevantSnippet = extractRelevantSnippet(fileContent, location.getMethodName(), location.getLineNumber());
+                                    relatedCode.add(RelatedCode.builder()
+                                            .filePath(matchedFile)
+                                            .codeSnippet(relevantSnippet)
+                                            .relevance("High")
+                                            .build());
+                                    location.setConfidence(0.95);
+                                    log.info("Added related code for: {}", matchedFile);
+                                } catch (Exception e) {
+                                    log.warn("Failed to read file: {}", matchedFile, e);
+                                }
+                            } else {
+                                log.info("No exact match, falling back to search by simple class name");
+                                List<String> matchedFiles = codeParserService.searchFilesByClassName(
+                                        repository.getLocalPath(),
+                                        simpleClassName
+                                );
+                                if (!matchedFiles.isEmpty()) {
+                                    String matchedFile2 = matchedFiles.get(0);
+                                    location.setFilePath(matchedFile2);
+                                    log.info("Found match by simple name: {}", matchedFile2);
+                                    
+                                    try {
+                                        String fileContent = codeParserService.readFile(repository.getLocalPath(), matchedFile2);
+                                        String relevantSnippet = extractRelevantSnippet(fileContent, location.getMethodName(), location.getLineNumber());
+                                        relatedCode.add(RelatedCode.builder()
+                                                .filePath(matchedFile2)
+                                                .codeSnippet(relevantSnippet)
+                                                .relevance("High")
+                                                .build());
+                                        location.setConfidence(0.85);
+                                    } catch (Exception e) {
+                                        log.warn("Failed to read file: {}", matchedFile2, e);
+                                    }
+                                } else {
+                                    List<CodeChunk> relatedChunks = vectorStoreService.search(
+                                            location.getClassName() + " " + location.getMethodName(),
+                                            repoId,
+                                            3
+                                    );
+                                    if (!relatedChunks.isEmpty()) {
+                                        location.setConfidence(0.7);
+                                    }
+                                }
                             }
-                        } else {
-                            List<CodeChunk> relatedChunks = vectorStoreService.search(
-                                    location.getClassName() + " " + location.getMethodName(),
-                                    repoId,
-                                    3
-                            );
-                            if (!relatedChunks.isEmpty()) {
-                                location.setConfidence(0.8);
-                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to process location: {}", location.getClassName(), e);
                         }
-                    } catch (Exception e) {
-                        log.warn("Failed to process location: {}", location.getClassName(), e);
                     }
-                }
 
                 if (relatedCode.isEmpty()) {
                     log.info("No direct matches found, searching vector store...");
@@ -416,6 +442,40 @@ public class RepositoryAnalysisService {
             return fullClassName.substring(lastDot + 1);
         }
         return fullClassName;
+    }
+    
+    private String findFileByFullClassName(List<String> allFiles, String fullClassName, String simpleClassName) {
+        log.info("Trying to find file for full class name: {}", fullClassName);
+        
+        String packagePath = fullClassName.replace('.', '/') + ".java";
+        log.info("Checking package path: {}", packagePath);
+        
+        for (String file : allFiles) {
+            if (file.endsWith(packagePath)) {
+                log.info("Found exact package path match: {}", file);
+                return file;
+            }
+        }
+        
+        String simpleFileName = simpleClassName + ".java";
+        for (String file : allFiles) {
+            if (file.endsWith("/" + simpleFileName) || file.equals(simpleFileName)) {
+                log.info("Found simple file name match: {}", file);
+                return file;
+            }
+        }
+        
+        String lowerSimpleClassName = simpleClassName.toLowerCase();
+        for (String file : allFiles) {
+            String fileName = file.substring(file.lastIndexOf('/') + 1).toLowerCase();
+            if (fileName.contains(lowerSimpleClassName) && fileName.endsWith(".java")) {
+                log.info("Found fuzzy match: {}", file);
+                return file;
+            }
+        }
+        
+        log.info("No match found for class: {}", fullClassName);
+        return null;
     }
 
     private String extractErrorType(String errorStack) {
