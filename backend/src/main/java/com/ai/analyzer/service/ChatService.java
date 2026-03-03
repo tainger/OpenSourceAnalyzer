@@ -4,6 +4,8 @@ import com.ai.analyzer.config.AnalyzerProperties;
 import com.ai.analyzer.git.GitService;
 import com.ai.analyzer.model.CodeChunk;
 import com.ai.analyzer.model.Repository;
+import com.ai.analyzer.model.dto.ErrorStackAnalysisResponse;
+import com.ai.analyzer.model.dto.SuspectedLocation;
 import com.ai.analyzer.embedding.VectorStoreService;
 import com.ai.analyzer.parser.CodeParserService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -19,6 +21,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -28,14 +32,16 @@ public class ChatService {
     private final GitService gitService;
     private final VectorStoreService vectorStoreService;
     private final CodeParserService codeParserService;
+    private final RepositoryAnalysisService analysisService;
     private final AnalyzerProperties properties;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    public ChatService(GitService gitService, VectorStoreService vectorStoreService, CodeParserService codeParserService, AnalyzerProperties properties) {
+    public ChatService(GitService gitService, VectorStoreService vectorStoreService, CodeParserService codeParserService, RepositoryAnalysisService analysisService, AnalyzerProperties properties) {
         this.gitService = gitService;
         this.vectorStoreService = vectorStoreService;
         this.codeParserService = codeParserService;
+        this.analysisService = analysisService;
         this.properties = properties;
         this.restTemplate = createRestTemplateWithTimeout();
         this.objectMapper = new ObjectMapper();
@@ -54,6 +60,11 @@ public class ChatService {
             return "未找到仓库，请先选择一个仓库。";
         }
 
+        if (isErrorStack(message)) {
+            log.info("Detected error stack, analyzing...");
+            return analyzeErrorStack(repositoryId, message);
+        }
+
         String apiKey = properties.getDashscope().getApiKey();
         if (apiKey == null || apiKey.trim().isEmpty()) {
             log.info("No API Key configured, using fallback response");
@@ -67,6 +78,72 @@ public class ChatService {
             log.error("Failed to call DashScope API: " + e.getMessage(), e);
             return "⚠️ 调用百炼 API 失败: " + e.getMessage() + "\n\n已自动切换到预设回答模式。\n\n" + useFallbackResponse(repository, message);
         }
+    }
+    
+    private boolean isErrorStack(String message) {
+        if (message.length() < 50) {
+            return false;
+        }
+        
+        String lowerMessage = message.toLowerCase();
+        if (lowerMessage.contains("exception") || lowerMessage.contains("error") || 
+            lowerMessage.contains("stack trace") || lowerMessage.contains("at ")) {
+            return true;
+        }
+        
+        Pattern stackPattern = Pattern.compile("at\\s+[\\w.$]+\\.([\\w$]+)\\(");
+        Matcher matcher = stackPattern.matcher(message);
+        int matchCount = 0;
+        while (matcher.find()) {
+            matchCount++;
+            if (matchCount >= 2) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private String analyzeErrorStack(String repositoryId, String errorStack) {
+        ErrorStackAnalysisResponse analysis = analysisService.analyzeErrorStack(repositoryId, errorStack);
+        
+        StringBuilder response = new StringBuilder();
+        response.append("## 🐛 错误堆栈分析结果\n\n");
+        
+        response.append("### 错误类型\n");
+        response.append("`").append(analysis.getErrorType()).append("`\n\n");
+        
+        response.append("### 根本原因\n");
+        response.append(analysis.getRootCause()).append("\n\n");
+        
+        response.append("### 摘要\n");
+        response.append(analysis.getSummary()).append("\n\n");
+        
+        if (!analysis.getSuspectedLocations().isEmpty()) {
+            response.append("### 可疑位置\n");
+            for (int i = 0; i < analysis.getSuspectedLocations().size(); i++) {
+                SuspectedLocation location = analysis.getSuspectedLocations().get(i);
+                response.append(String.format("%d. **%s.%s**\n", i + 1, location.getClassName(), location.getMethodName()));
+                response.append(String.format("   - 文件: `%s:%d`\n", location.getFilePath(), location.getLineNumber()));
+                response.append(String.format("   - 置信度: %.0f%%\n", location.getConfidence() * 100));
+                if (location.getDescription() != null && !location.getDescription().isEmpty()) {
+                    response.append(String.format("   - %s\n", location.getDescription()));
+                }
+                response.append("\n");
+            }
+        }
+        
+        if (!analysis.getPossibleFixes().isEmpty()) {
+            response.append("### 可能的修复方案\n");
+            for (int i = 0; i < analysis.getPossibleFixes().size(); i++) {
+                response.append(String.format("%d. %s\n", i + 1, analysis.getPossibleFixes().get(i)));
+            }
+            response.append("\n");
+        }
+        
+        response.append("💡 提示：你可以在\"错误分析\"页面查看更详细的分析结果和相关代码！");
+        
+        return response.toString();
     }
 
     private String callDashscopeAPI(Repository repository, String message) throws Exception {
