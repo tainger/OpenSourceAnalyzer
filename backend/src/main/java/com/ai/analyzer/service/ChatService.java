@@ -81,9 +81,9 @@ public class ChatService {
             return response;
         }
 
-        log.info("API Key found, calling DashScope API...");
+        log.info("API Key found, calling DashScope API with tool support...");
         try {
-            String response = callDashscopeAPI(repository, message);
+            String response = callDashscopeAPIWithTools(repository, message);
             chatMemoryService.addMessage(repositoryId, "assistant", response);
             return response;
         } catch (Exception e) {
@@ -237,6 +237,168 @@ public class ChatService {
         return "未能获取到 AI 回复。";
     }
 
+    private String callDashscopeAPIWithTools(Repository repository, String message) throws Exception {
+        String baseUrl = properties.getDashscope().getBaseUrl();
+        String model = properties.getDashscope().getModel();
+        String apiKey = properties.getDashscope().getApiKey();
+        String repoId = repository.getId();
+
+        log.info("Calling DashScope API with tool support...");
+
+        int maxIterations = 3;
+        String currentResponse = null;
+        List<Map<String, String>> conversationMessages = new ArrayList<>();
+
+        String initialPrompt = buildPrompt(repository, message);
+
+        Map<String, String> systemMessage = new HashMap<>();
+        systemMessage.put("role", "system");
+        systemMessage.put("content", "你是一个专业的代码分析助手，擅长理解和分析代码库。你可以使用工具来获取更多信息。");
+        conversationMessages.add(systemMessage);
+
+        Map<String, String> userMessageMap = new HashMap<>();
+        userMessageMap.put("role", "user");
+        userMessageMap.put("content", initialPrompt);
+        conversationMessages.add(userMessageMap);
+
+        for (int i = 0; i < maxIterations; i++) {
+            log.info("Tool call iteration: " + (i + 1));
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", model);
+            requestBody.put("messages", conversationMessages);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Authorization", "Bearer " + apiKey);
+
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    baseUrl + "/chat/completions",
+                    entity,
+                    String.class
+            );
+
+            JsonNode root = objectMapper.readTree(response.getBody());
+            JsonNode choices = root.path("choices");
+
+            if (!choices.isArray() || choices.size() == 0) {
+                break;
+            }
+
+            JsonNode messageNode = choices.get(0).path("message");
+            String aiResponse = messageNode.path("content").asText();
+            currentResponse = aiResponse;
+
+            ToolCallRequest toolCall = parseToolCall(aiResponse);
+            if (toolCall == null) {
+                log.info("No tool call detected, finishing");
+                break;
+            }
+
+            log.info("Tool call detected: " + toolCall.toolName);
+
+            Map<String, Object> toolResult = toolService.executeTool(
+                    toolCall.toolName,
+                    toolCall.params,
+                    repoId
+            );
+
+            String toolResultStr = objectMapper.writeValueAsString(toolResult);
+
+            Map<String, String> assistantMessage = new HashMap<>();
+            assistantMessage.put("role", "assistant");
+            assistantMessage.put("content", aiResponse);
+            conversationMessages.add(assistantMessage);
+
+            Map<String, String> toolResponseMessage = new HashMap<>();
+            toolResponseMessage.put("role", "user");
+            toolResponseMessage.put("content", "工具执行结果:\n```json\n" + toolResultStr + "\n```\n\n请根据工具结果继续回答。");
+            conversationMessages.add(toolResponseMessage);
+
+            chatMemoryService.addMessage(repoId, "assistant", "[工具调用: " + toolCall.toolName + "]");
+        }
+
+        return currentResponse != null ? currentResponse : "未能获取到 AI 回复。";
+    }
+
+    private static class ToolCallRequest {
+        String toolName;
+        Map<String, Object> params;
+
+        ToolCallRequest(String toolName, Map<String, Object> params) {
+            this.toolName = toolName;
+            this.params = params;
+        }
+    }
+
+    private ToolCallRequest parseToolCall(String aiResponse) {
+        try {
+            String lowerResponse = aiResponse.toLowerCase();
+            
+            if (lowerResponse.contains("read_file") || lowerResponse.contains("readfile")) {
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("file_path[\"']?\\s*[:=]\\s*[\"']?([^\"',}\\s]+)");
+                java.util.regex.Matcher matcher = pattern.matcher(aiResponse);
+                if (matcher.find()) {
+                    String filePath = matcher.group(1).trim();
+                    Map<String, Object> params = new HashMap<>();
+                    params.put("file_path", filePath);
+                    return new ToolCallRequest("read_file", params);
+                }
+            }
+
+            if (lowerResponse.contains("search_files") || lowerResponse.contains("searchfiles")) {
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("class_name[\"']?\\s*[:=]\\s*[\"']?([^\"',}\\s]+)");
+                java.util.regex.Matcher matcher = pattern.matcher(aiResponse);
+                if (matcher.find()) {
+                    String className = matcher.group(1).trim();
+                    Map<String, Object> params = new HashMap<>();
+                    params.put("class_name", className);
+                    return new ToolCallRequest("search_files", params);
+                }
+            }
+
+            if (lowerResponse.contains("list_files") || lowerResponse.contains("listfiles")) {
+                Map<String, Object> params = new HashMap<>();
+                return new ToolCallRequest("list_files", params);
+            }
+
+            if (lowerResponse.contains("search_code") || lowerResponse.contains("searchcode")) {
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("query[\"']?\\s*[:=]\\s*[\"']?([^\"',}\\s]+)");
+                java.util.regex.Matcher matcher = pattern.matcher(aiResponse);
+                if (matcher.find()) {
+                    String query = matcher.group(1).trim();
+                    Map<String, Object> params = new HashMap<>();
+                    params.put("query", query);
+                    return new ToolCallRequest("search_code", params);
+                }
+            }
+
+            java.util.regex.Pattern jsonPattern = java.util.regex.Pattern.compile("```json\\s*(\\{[\\s\\S]*?\\})");
+            java.util.regex.Matcher jsonMatcher = jsonPattern.matcher(aiResponse);
+            if (jsonMatcher.find()) {
+                String jsonStr = jsonMatcher.group(1);
+                JsonNode jsonNode = objectMapper.readTree(jsonStr);
+                if (jsonNode.has("tool") || jsonNode.has("tool_name")) {
+                    String toolName = jsonNode.has("tool") ? jsonNode.path("tool").asText() : jsonNode.path("tool_name").asText();
+                    Map<String, Object> params = new HashMap<>();
+                    if (jsonNode.has("params") && jsonNode.path("params").isObject()) {
+                        java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = jsonNode.path("params").fields();
+                        while (fields.hasNext()) {
+                            java.util.Map.Entry<String, JsonNode> field = fields.next();
+                            params.put(field.getKey(), field.getValue().asText());
+                        }
+                    }
+                    return new ToolCallRequest(toolName, params);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to parse tool call", e);
+        }
+        return null;
+    }
+
     private String buildPrompt(Repository repository, String userMessage) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是一个专业的代码分析助手，擅长理解和分析代码库。\n\n");
@@ -247,8 +409,31 @@ public class ChatService {
         }
         
         prompt.append("## 可用工具\n\n");
-        prompt.append("如果需要，你可以要求使用以下工具。请用 JSON 格式描述工具调用：\n");
+        prompt.append("你可以使用以下工具来获取更多信息。请用以下格式之一来调用工具：\n\n");
+        prompt.append("### 格式 1: 自然语言描述\n");
+        prompt.append("直接说明要使用的工具和参数，例如：\n");
+        prompt.append("- \"使用 read_file 工具读取 src/main/java/Example.java\"\n");
+        prompt.append("- \"使用 search_files 搜索 UserService 类\"\n\n");
+        
+        prompt.append("### 格式 2: JSON 格式\n");
+        prompt.append("```json\n");
+        prompt.append("{\n");
+        prompt.append("  \"tool\": \"read_file\",\n");
+        prompt.append("  \"params\": {\n");
+        prompt.append("    \"file_path\": \"src/main/java/Example.java\"\n");
+        prompt.append("  }\n");
+        prompt.append("}\n");
+        prompt.append("```\n\n");
+        
+        prompt.append("工具列表：\n");
         prompt.append(toolService.getAvailableTools()).append("\n\n");
+        
+        prompt.append("## 使用工具的时机\n\n");
+        prompt.append("在以下情况下请使用工具：\n");
+        prompt.append("1. 需要查看具体文件内容时\n");
+        prompt.append("2. 需要搜索特定类或文件时\n");
+        prompt.append("3. 需要了解项目文件结构时\n");
+        prompt.append("4. 用户问题涉及具体代码时\n\n");
         
         prompt.append("项目信息：\n");
         prompt.append("- 项目名称: ").append(repository.getName()).append("\n");
@@ -258,8 +443,9 @@ public class ChatService {
         prompt.append("## 回答要求\n\n");
         prompt.append("1. 用中文回答\n");
         prompt.append("2. 回答要专业、详细\n");
-        prompt.append("3. 如果需要查看更多代码或文件，可以要求使用工具\n");
-        prompt.append("4. 结合项目上下文进行分析\n\n");
+        prompt.append("3. 先思考是否需要使用工具，如果需要就先调用工具\n");
+        prompt.append("4. 工具返回结果后，基于结果继续回答\n");
+        prompt.append("5. 最多调用 3 次工具\n\n");
         
         boolean isErrorStack = isErrorStack(userMessage);
         
