@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-source-code-analyzer
+
+analyzer:
+  repos:
+    base-dir: ./data/repos
+  chroma:
+    url: http://localhost:8000
+    collection-name: source-code
+  bge:
+    model-path: ./data/models/bge-small-zh-v1.5
+    model-name: BAAI/bge-small-zh-v1.5
+  dashscope:
+    api-key: ${DASHSCOPE_API_KEY:sk-0c033f482ae946ecb524aa98b8aa20c3}
+    model: qwen-turbo
+    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+logging:
+  level:
+    com.ai.analyzer: DEBUG
+    dev.langchain4j: INFO
