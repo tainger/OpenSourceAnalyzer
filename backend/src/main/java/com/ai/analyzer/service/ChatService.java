@@ -124,8 +124,16 @@ public class ChatService {
             for (int i = 0; i < analysis.getSuspectedLocations().size(); i++) {
                 SuspectedLocation location = analysis.getSuspectedLocations().get(i);
                 response.append(String.format("%d. **%s.%s**\n", i + 1, location.getClassName(), location.getMethodName()));
-                response.append(String.format("   - 文件: `%s:%d`\n", location.getFilePath(), location.getLineNumber()));
-                response.append(String.format("   - 置信度: %.0f%%\n", location.getConfidence() * 100));
+                
+                if (location.getFilePath() != null && location.getFilePath().contains("/")) {
+                    response.append(String.format("   - 📄 文件: `%s:%d`\n", 
+                            location.getFilePath(), 
+                            location.getLineNumber()));
+                } else {
+                    response.append(String.format("   - 📄 文件: `%s:%d`\n", location.getFilePath(), location.getLineNumber()));
+                }
+                
+                response.append(String.format("   - 🎯 置信度: %.0f%%\n", location.getConfidence() * 100));
                 if (location.getDescription() != null && !location.getDescription().isEmpty()) {
                     response.append(String.format("   - %s\n", location.getDescription()));
                 }
@@ -139,6 +147,18 @@ public class ChatService {
                 response.append(String.format("%d. %s\n", i + 1, analysis.getPossibleFixes().get(i)));
             }
             response.append("\n");
+        }
+        
+        if (!analysis.getRelatedCode().isEmpty()) {
+            response.append("### 相关代码\n");
+            for (int i = 0; i < analysis.getRelatedCode().size() && i < 3; i++) {
+                com.ai.analyzer.model.dto.RelatedCode code = analysis.getRelatedCode().get(i);
+                response.append(String.format("#### %d. %s\n", i + 1, code.getFilePath()));
+                response.append("```\n").append(code.getCodeSnippet()).append("\n```\n\n");
+            }
+            if (analysis.getRelatedCode().size() > 3) {
+                response.append(String.format("... 还有 %d 个相关代码片段\n\n", analysis.getRelatedCode().size() - 3));
+            }
         }
         
         response.append("💡 提示：你可以在\"错误分析\"页面查看更详细的分析结果和相关代码！");

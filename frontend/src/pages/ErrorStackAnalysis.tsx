@@ -8,7 +8,9 @@ const ErrorStackAnalysis: React.FC = () => {
   const [selectedRepoId, setSelectedRepoId] = useState<string>('');
   const [repositories, setRepositories] = useState<Record<string, Repository>>({});
   const [analysis, setAnalysis] = useState<ErrorStackAnalysisResponse | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
   const [loadingRepos, setLoadingRepos] = useState(true);
   
   const sampleErrorStacks = [
@@ -60,16 +62,38 @@ Caused by: java.lang.IllegalStateException: Server not initialized
 
     try {
       setLoading(true);
+      setAiAnalysis(null);
       const response = await analysisApi.analyzeErrorStack({
         errorStack,
         repositoryId: selectedRepoId || undefined,
       });
       setAnalysis(response.data);
+      
+      if (selectedRepoId) {
+        await analyzeWithAI();
+      }
     } catch (error) {
       console.error('Failed to analyze error stack:', error);
       alert('分析错误堆栈失败');
     } finally {
       setLoading(false);
+    }
+  };
+  
+  const analyzeWithAI = async () => {
+    if (!selectedRepoId) return;
+    
+    try {
+      setLoadingAi(true);
+      const response = await analysisApi.chat({
+        repositoryId: selectedRepoId,
+        message: errorStack,
+      });
+      setAiAnalysis(response.data.message);
+    } catch (error) {
+      console.error('Failed to analyze with AI:', error);
+    } finally {
+      setLoadingAi(false);
     }
   };
 
@@ -134,20 +158,51 @@ Caused by: java.lang.IllegalStateException: Server not initialized
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
             />
           </div>
-          <button
-            type="submit"
-            disabled={!errorStack.trim() || loading}
-            className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? '分析中...' : '分析错误堆栈'}
-          </button>
+          <div className="flex gap-4">
+            <button
+              type="submit"
+              disabled={!errorStack.trim() || loading}
+              className="flex-1 bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+            >
+              {loading ? '分析中...' : '分析错误堆栈'}
+            </button>
+            {analysis && selectedRepoId && !aiAnalysis && (
+              <button
+                type="button"
+                onClick={analyzeWithAI}
+                disabled={loadingAi}
+                className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+              >
+                {loadingAi ? 'AI 分析中...' : '🤖 AI 智能分析'}
+              </button>
+            )}
+          </div>
         </form>
       </div>
 
       {analysis && (
         <div className="space-y-6">
+          {(aiAnalysis || loadingAi) && (
+            <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg shadow-md p-6 border-2 border-blue-200">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-2xl">🤖</span>
+                <h2 className="text-xl font-semibold text-gray-800">AI 智能分析</h2>
+              </div>
+              {loadingAi ? (
+                <div className="text-center py-8 text-gray-500">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                  AI 正在分析中...
+                </div>
+              ) : aiAnalysis ? (
+                <div className="text-gray-700 whitespace-pre-wrap font-sans">
+                  {aiAnalysis}
+                </div>
+              ) : null}
+            </div>
+          )}
+          
           <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-semibold mb-4 text-gray-800">分析结果</h2>
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">📊 基础分析</h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
               <div>
