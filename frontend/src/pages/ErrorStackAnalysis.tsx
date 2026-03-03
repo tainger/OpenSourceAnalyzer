@@ -10,6 +10,33 @@ const ErrorStackAnalysis: React.FC = () => {
   const [analysis, setAnalysis] = useState<ErrorStackAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingRepos, setLoadingRepos] = useState(true);
+  
+  const sampleErrorStacks = [
+    {
+      name: 'Nacos 示例错误',
+      value: `java.lang.NullPointerException: Cannot invoke method on null object
+    at com.alibaba.nacos.core.distributed.distro.task.DistroTaskEngine.addTask(DistroTaskEngine.java:89)
+    at com.alibaba.nacos.core.distributed.distro.task.DistroTaskDispatch.dispatch(DistroTaskDispatch.java:67)
+    at com.alibaba.nacos.core.distributed.distro.DistroProtocol.syncToAllServer(DistroProtocol.java:156)
+    at com.alibaba.nacos.core.distributed.distro.DistroProtocol.onReceive(DistroProtocol.java:123)
+Caused by: java.lang.IllegalStateException: Server not initialized
+    at com.alibaba.nacos.core.distributed.distro.task.DistroTaskEngine.init(DistroTaskEngine.java:56)
+    ... 3 more`
+    },
+    {
+      name: 'Spring Boot 示例',
+      value: `org.springframework.web.client.ResourceAccessException: I/O error on POST request
+    at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:785)
+    at org.springframework.web.client.RestTemplate.execute(RestTemplate.java:711)
+    at org.springframework.web.client.RestTemplate.postForEntity(RestTemplate.java:478)
+    at com.example.demo.service.MyService.callApi(MyService.java:42)
+    at com.example.demo.controller.MyController.getData(MyController.java:28)`
+    }
+  ];
+  
+  const loadSample = (sample: string) => {
+    setErrorStack(sample);
+  };
 
   useEffect(() => {
     loadRepositories();
@@ -57,6 +84,25 @@ const ErrorStackAnalysis: React.FC = () => {
 
       <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-xl font-semibold mb-4 text-gray-800">输入错误堆栈</h2>
+        
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            快速示例
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {sampleErrorStacks.map((sample, index) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => loadSample(sample.value)}
+                className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors"
+              >
+                {sample.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        
         <form onSubmit={handleAnalyze} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">

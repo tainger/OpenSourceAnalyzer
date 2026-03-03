@@ -133,24 +133,25 @@ public class RepositoryAnalysisService {
     }
 
     public ErrorStackAnalysisResponse analyzeErrorStack(String repoId, String errorStack) {
+        log.info("Analyzing error stack, repoId: {}", repoId);
         List<SuspectedLocation> locations = parseErrorStack(errorStack);
+        log.info("Found {} suspected locations", locations.size());
         
         List<RelatedCode> relatedCode = new ArrayList<>();
         if (repoId != null) {
             Repository repository = gitService.getRepository(repoId);
             if (repository != null) {
+                log.info("Repository found: {}", repository.getName());
                 for (SuspectedLocation location : locations) {
                     try {
-                        String simpleClassName = location.getClassName();
-                        int lastDot = simpleClassName.lastIndexOf('.');
-                        if (lastDot != -1) {
-                            simpleClassName = simpleClassName.substring(lastDot + 1);
-                        }
+                        String simpleClassName = extractSimpleClassName(location.getClassName());
+                        log.info("Searching for class: {}", simpleClassName);
                         
                         List<String> matchedFiles = codeParserService.searchFilesByClassName(
                                 repository.getLocalPath(),
                                 simpleClassName
                         );
+                        log.info("Found {} matched files for {}", matchedFiles.size(), simpleClassName);
                         
                         for (String matchedFile : matchedFiles) {
                             try {
@@ -161,18 +162,22 @@ public class RepositoryAnalysisService {
                                         .codeSnippet(relevantSnippet)
                                         .relevance("High")
                                         .build());
+                                location.setConfidence(0.9);
+                                log.info("Added related code for: {}", matchedFile);
                             } catch (Exception e) {
                                 log.warn("Failed to read file: {}", matchedFile, e);
                             }
                         }
                         
-                        List<CodeChunk> relatedChunks = vectorStoreService.search(
-                                location.getClassName() + " " + location.getMethodName(),
-                                repoId,
-                                3
-                        );
-                        if (!relatedChunks.isEmpty()) {
-                            location.setConfidence(0.9);
+                        if (matchedFiles.isEmpty()) {
+                            List<CodeChunk> relatedChunks = vectorStoreService.search(
+                                    location.getClassName() + " " + location.getMethodName(),
+                                    repoId,
+                                    3
+                            );
+                            if (!relatedChunks.isEmpty()) {
+                                location.setConfidence(0.8);
+                            }
                         }
                     } catch (Exception e) {
                         log.warn("Failed to process location: {}", location.getClassName(), e);
@@ -180,6 +185,7 @@ public class RepositoryAnalysisService {
                 }
 
                 if (relatedCode.isEmpty()) {
+                    log.info("No direct matches found, searching vector store...");
                     List<CodeChunk> chunks = vectorStoreService.search(errorStack, repoId, 10);
                     for (CodeChunk chunk : chunks) {
                         relatedCode.add(RelatedCode.builder()
@@ -188,7 +194,10 @@ public class RepositoryAnalysisService {
                                 .relevance("Medium")
                                 .build());
                     }
+                    log.info("Found {} related chunks from vector store", chunks.size());
                 }
+            } else {
+                log.warn("Repository not found for id: {}", repoId);
             }
         }
 
@@ -357,23 +366,55 @@ public class RepositoryAnalysisService {
 
     private List<SuspectedLocation> parseErrorStack(String errorStack) {
         List<SuspectedLocation> locations = new ArrayList<>();
-        Pattern stackPattern = Pattern.compile(
-                "at\\s+([\\w.$]+)\\.([\\w$]+)\\(([\\w]+\\.java):?(\\d+)?\\)"
-        );
         
-        Matcher matcher = stackPattern.matcher(errorStack);
-        while (matcher.find()) {
-            locations.add(SuspectedLocation.builder()
-                    .className(matcher.group(1))
-                    .methodName(matcher.group(2))
-                    .filePath(matcher.group(3))
-                    .lineNumber(matcher.group(4) != null ? Integer.parseInt(matcher.group(4)) : 0)
-                    .description("Found in stack trace")
-                    .confidence(0.7)
-                    .build());
+        List<Pattern> patterns = new ArrayList<>();
+        patterns.add(Pattern.compile(
+                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(([\\w.$-]+\\.java):?(\\d+)?\\)"
+        ));
+        patterns.add(Pattern.compile(
+                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(([^:]+):(\\d+)\\)"
+        ));
+        patterns.add(Pattern.compile(
+                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(Unknown Source\\)"
+        ));
+        patterns.add(Pattern.compile(
+                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(Native Method\\)"
+        ));
+        
+        for (Pattern pattern : patterns) {
+            Matcher matcher = pattern.matcher(errorStack);
+            while (matcher.find()) {
+                String className = matcher.group(1);
+                String methodName = matcher.group(2);
+                String fileName = matcher.groupCount() >= 3 ? matcher.group(3) : "Unknown";
+                int lineNumber = matcher.groupCount() >= 4 && matcher.group(4) != null 
+                    ? Integer.parseInt(matcher.group(4)) 
+                    : 0;
+                
+                if (fileName.equals("Unknown Source") || fileName.equals("Native Method")) {
+                    fileName = extractSimpleClassName(className) + ".java";
+                }
+                
+                locations.add(SuspectedLocation.builder()
+                        .className(className)
+                        .methodName(methodName)
+                        .filePath(fileName)
+                        .lineNumber(lineNumber)
+                        .description("Found in stack trace")
+                        .confidence(0.7)
+                        .build());
+            }
         }
         
-        return locations;
+        return locations.stream().distinct().toList();
+    }
+    
+    private String extractSimpleClassName(String fullClassName) {
+        int lastDot = fullClassName.lastIndexOf('.');
+        if (lastDot != -1) {
+            return fullClassName.substring(lastDot + 1);
+        }
+        return fullClassName;
     }
 
     private String extractErrorType(String errorStack) {
