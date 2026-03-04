@@ -11,6 +11,9 @@ analyzer:
   chroma:
     url: http://localhost:8000
     collection-name: source-code
+  embedding:
+    type: local
+    dimension: 384
   bge:
     model-path: ./data/models/bge-small-zh-v1.5
     model-name: BAAI/bge-small-zh-v1.5

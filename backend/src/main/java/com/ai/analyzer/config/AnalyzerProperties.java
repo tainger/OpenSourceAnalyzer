@@ -12,6 +12,7 @@ public class AnalyzerProperties {
     private Chroma chroma = new Chroma();
     private Bge bge = new Bge();
     private Dashscope dashscope = new Dashscope();
+    private Embedding embedding = new Embedding();
 
     @Data
     public static class Repos {
@@ -35,5 +36,11 @@ public class AnalyzerProperties {
         private String apiKey;
         private String model;
         private String baseUrl;
+    }
+
+    @Data
+    public static class Embedding {
+        private String type = "local";
+        private int dimension = 384;
     }
 }
