@@ -222,6 +222,33 @@ public class RepositoryAnalysisService {
                                     .build());
                         }
                         log.info("Found {} related chunks from vector store", chunks.size());
+                    } else {
+                        log.info("Also searching vector store for additional related code...");
+                        StringBuilder searchQuery = new StringBuilder();
+                        for (SuspectedLocation location : locations) {
+                            searchQuery.append(location.getClassName()).append(" ")
+                                    .append(location.getMethodName()).append(" ");
+                        }
+                        searchQuery.append(extractErrorType(errorStack));
+                        
+                        List<CodeChunk> additionalChunks = vectorStoreService.search(
+                                searchQuery.toString(), 
+                                repoId, 
+                                5
+                        );
+                        
+                        for (CodeChunk chunk : additionalChunks) {
+                            boolean alreadyExists = relatedCode.stream()
+                                    .anyMatch(rc -> rc.getFilePath().equals(chunk.getFilePath()));
+                            if (!alreadyExists) {
+                                relatedCode.add(RelatedCode.builder()
+                                        .filePath(chunk.getFilePath())
+                                        .codeSnippet(chunk.getContent())
+                                        .relevance("Medium")
+                                        .build());
+                            }
+                        }
+                        log.info("Found {} additional related chunks from vector store", additionalChunks.size());
                     }
                 } catch (Exception e) {
                     log.error("Failed to process error stack analysis", e);
