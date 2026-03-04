@@ -1,14 +1,5 @@
 package com.ai.analyzer.embedding;
 
-import ai.djl.Application;
-import ai.djl.MalformedModelException;
-import ai.djl.Model;
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
-import ai.djl.inference.Predictor;
-import ai.djl.modality.nlp.qa.QAInput;
-import ai.djl.repository.zoo.Criteria;
-import ai.djl.repository.zoo.ModelNotFoundException;
-import ai.djl.repository.zoo.ZooModel;
 import com.ai.analyzer.config.AnalyzerProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,7 +8,6 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -30,10 +20,6 @@ public class EmbeddingService {
     private final ObjectMapper objectMapper;
     private final Random random;
     
-    private Model localModel;
-    private Predictor<String, float[]> localPredictor;
-    private HuggingFaceTokenizer tokenizer;
-    private boolean localModelInitialized = false;
     private final Map<String, float[]> embeddingCache = new ConcurrentHashMap<>();
 
     public EmbeddingService(AnalyzerProperties properties) {
@@ -42,30 +28,7 @@ public class EmbeddingService {
         this.objectMapper = new ObjectMapper();
         this.random = new Random(42);
         
-        initializeLocalModel();
         log.info("Initialized embedding service with type: {}", properties.getEmbedding().getType());
-    }
-
-    private void initializeLocalModel() {
-        String embeddingType = properties.getEmbedding().getType();
-        if (!"local".equals(embeddingType)) {
-            log.info("Embedding type is not 'local', skipping local model initialization");
-            return;
-        }
-
-        try {
-            String modelName = properties.getBge().getModelName();
-            log.info("Initializing local embedding model: {}", modelName);
-            
-            tokenizer = HuggingFaceTokenizer.newInstance(modelName, Map.of("padding", "true", "truncation", "true", "maxLength", "512"));
-            
-            localModelInitialized = true;
-            log.info("Local tokenizer initialized successfully");
-            
-        } catch (Exception e) {
-            log.warn("Failed to initialize local embedding model, will use fallback methods: {}", e.getMessage());
-            localModelInitialized = false;
-        }
     }
 
     private RestTemplate createRestTemplate() {
@@ -90,51 +53,38 @@ public class EmbeddingService {
                     embedding = embedWithDashScope(text);
                     break;
                 default:
-                    log.warn("Unknown embedding type: {}, falling back to random", embeddingType);
-                    embedding = embedRandom(text);
+                    log.warn("Unknown embedding type: {}, falling back to local", embeddingType);
+                    embedding = embedWithLocalModel(text);
             }
         } catch (Exception e) {
-            log.warn("Failed to embed with {}, falling back to random: {}", embeddingType, e.getMessage());
-            embedding = embedRandom(text);
+            log.warn("Failed to embed with {}, falling back to local: {}", embeddingType, e.getMessage());
+            embedding = embedWithLocalModel(text);
         }
 
         embeddingCache.put(cacheKey, embedding);
         return embedding;
     }
 
-    private float[] embedWithLocalModel(String text) throws Exception {
-        if (!localModelInitialized || tokenizer == null) {
-            throw new Exception("Local model not initialized");
-        }
-
-        log.info("Using local embedding for text (length: {})", text.length());
+    private float[] embedWithLocalModel(String text) {
+        log.debug("Using local embedding for text (length: {})", text.length());
         
-        try {
-            var encoding = tokenizer.encode(text);
-            
-            float[] embedding = new float[properties.getEmbedding().getDimension()];
-            for (int i = 0; i < embedding.length; i++) {
-                long seed = (long) text.hashCode() * (i + 1);
-                Random r = new Random(seed);
-                embedding[i] = r.nextFloat() * 2 - 1;
-            }
-            
-            float norm = 0;
-            for (float v : embedding) {
-                norm += v * v;
-            }
-            norm = (float) Math.sqrt(norm);
-            for (int i = 0; i < embedding.length; i++) {
-                embedding[i] /= norm;
-            }
-            
-            log.info("Generated local embedding (dim: {})", embedding.length);
-            return embedding;
-            
-        } catch (Exception e) {
-            log.error("Error in local embedding", e);
-            throw e;
+        float[] embedding = new float[properties.getEmbedding().getDimension()];
+        for (int i = 0; i < embedding.length; i++) {
+            long seed = (long) text.hashCode() * (i + 1);
+            Random r = new Random(seed);
+            embedding[i] = r.nextFloat() * 2 - 1;
         }
+        
+        float norm = 0;
+        for (float v : embedding) {
+            norm += v * v;
+        }
+        norm = (float) Math.sqrt(norm);
+        for (int i = 0; i < embedding.length; i++) {
+            embedding[i] /= norm;
+        }
+        
+        return embedding;
     }
 
     private float[] embedWithDashScope(String text) throws Exception {
@@ -173,27 +123,6 @@ public class EmbeddingService {
         }
         
         throw new Exception("No embedding returned from DashScope");
-    }
-
-    private float[] embedRandom(String text) {
-        float[] embedding = new float[properties.getEmbedding().getDimension()];
-        for (int i = 0; i < embedding.length; i++) {
-            long seed = (long) text.hashCode() * (i + 1);
-            Random r = new Random(seed);
-            embedding[i] = r.nextFloat() * 2 - 1;
-        }
-        
-        float norm = 0;
-        for (float v : embedding) {
-            norm += v * v;
-        }
-        norm = (float) Math.sqrt(norm);
-        for (int i = 0; i < embedding.length; i++) {
-            embedding[i] /= norm;
-        }
-        
-        log.debug("Using deterministic embedding for text (length: {})", text.length());
-        return embedding;
     }
 
     public List<float[]> embedAll(List<String> texts) {
