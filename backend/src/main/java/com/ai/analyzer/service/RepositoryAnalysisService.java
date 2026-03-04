@@ -398,49 +398,37 @@ public class RepositoryAnalysisService {
         List<SuspectedLocation> locations = new ArrayList<>();
         Set<String> seenLocations = new HashSet<>();
         
-        List<Pattern> patterns = new ArrayList<>();
-        patterns.add(Pattern.compile(
+        Pattern pattern = Pattern.compile(
                 "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(([\\w.$-]+\\.java):?(\\d+)?\\)"
-        ));
-        patterns.add(Pattern.compile(
-                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(([^:]+):(\\d+)\\)"
-        ));
-        patterns.add(Pattern.compile(
-                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(Unknown Source\\)"
-        ));
-        patterns.add(Pattern.compile(
-                "at\\s+([\\w.$]+)\\.([\\w$<>]+)\\(Native Method\\)"
-        ));
+        );
         
-        for (Pattern pattern : patterns) {
-            Matcher matcher = pattern.matcher(errorStack);
-            while (matcher.find()) {
-                String className = matcher.group(1);
-                String methodName = matcher.group(2);
-                String fileName = matcher.groupCount() >= 3 ? matcher.group(3) : "Unknown";
-                int lineNumber = matcher.groupCount() >= 4 && matcher.group(4) != null 
-                    ? Integer.parseInt(matcher.group(4)) 
-                    : 0;
+        Matcher matcher = pattern.matcher(errorStack);
+        while (matcher.find()) {
+            String className = matcher.group(1);
+            String methodName = matcher.group(2);
+            String fileName = matcher.group(3);
+            int lineNumber = matcher.group(4) != null 
+                ? Integer.parseInt(matcher.group(4)) 
+                : 0;
+            
+            if (shouldFilterClass(className)) {
+                continue;
+            }
+            
+            String locationKey = className + "#" + methodName + "#" + fileName + "#" + lineNumber;
+            if (!seenLocations.contains(locationKey)) {
+                seenLocations.add(locationKey);
                 
-                if (fileName.equals("Unknown Source") || fileName.equals("Native Method")) {
-                    fileName = extractSimpleClassName(className) + ".java";
-                }
+                double confidence = calculateInitialConfidence(className, lineNumber);
                 
-                String locationKey = className + "#" + methodName + "#" + fileName + "#" + lineNumber;
-                if (!seenLocations.contains(locationKey)) {
-                    seenLocations.add(locationKey);
-                    
-                    double confidence = calculateInitialConfidence(className, lineNumber);
-                    
-                    locations.add(SuspectedLocation.builder()
-                            .className(className)
-                            .methodName(methodName)
-                            .filePath(fileName)
-                            .lineNumber(lineNumber)
-                            .description("Found in stack trace")
-                            .confidence(confidence)
-                            .build());
-                }
+                locations.add(SuspectedLocation.builder()
+                        .className(className)
+                        .methodName(methodName)
+                        .filePath(fileName)
+                        .lineNumber(lineNumber)
+                        .description("Found in stack trace")
+                        .confidence(confidence)
+                        .build());
             }
         }
         
@@ -455,7 +443,34 @@ public class RepositoryAnalysisService {
             return Double.compare(b.getConfidence(), a.getConfidence());
         });
         
-        return locations;
+        return locations.stream().limit(5).toList();
+    }
+    
+    private boolean shouldFilterClass(String className) {
+        if (className == null) {
+            return true;
+        }
+        
+        String lowerClassName = className.toLowerCase();
+        
+        List<String> excludedPackages = Arrays.asList(
+            "java.", "javax.", "sun.", "com.sun.", "jdk.",
+            "org.apache.", "org.springframework.", "org.hibernate.",
+            "org.mybatis.", "com.baomidou.", "com.alibaba.druid.",
+            "com.zaxxer.", "io.netty.", "okhttp3.", "retrofit2.",
+            "com.fasterxml.", "com.google.", "org.slf4j.", "org.apache.logging.",
+            "ch.qos.logback.", "org.aspectj.", "net.sf.cglib.",
+            "org.springframework.boot.", "org.springframework.cloud.",
+            "com.alibaba.nacos.api.", "com.alibaba.nacos.client."
+        );
+        
+        for (String prefix : excludedPackages) {
+            if (lowerClassName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        
+        return false;
     }
     
     private double calculateInitialConfidence(String className, int lineNumber) {
